@@ -292,6 +292,7 @@ this feed.
   draws the routes the optimiser would restart, with the Raidurg equity
   trade-off as a toggle. Self-contained; open it in any browser.
 - `outputs/optimisation.json` — solutions at each budget, consumed by the map
+- `outputs/stranding.csv` / `.json` — last useful bus vs last metro, per station
 
 Metric names are written for a planner reading them cold — "Buses an hour",
 "Places you can get to", "Service still running" — rather than the column names
@@ -304,6 +305,51 @@ The map uses key-free OpenStreetMap tiles darkened client-side rather than a
 dark CartoDB style, which now needs an API key. If tiles fail to load — the
 venue is expected to have poor wifi — the dark background, metro corridors and
 station markers still render, so the demo degrades instead of dying.
+
+## The stranding window
+
+The five time bands used elsewhere are a presentational choice. A planner's
+question is sharper: *what time does the last useful bus leave?* So this walks
+the evening hour by hour instead, finds the point at which each station's
+reachable destinations fall below five and stay there, and compares it with the
+last weekday metro arrival at that station.
+
+**53 of 57 metro stations run trains after their bus network has already gone
+dark.** The metro keeps delivering people to stations no bus can take them out
+of. Median window: 35 minutes.
+
+| Station | Last useful bus | Last metro | Stranded |
+|---|---|---|---:|
+| Road No 5 Jubilee Hills | 19:00 | 23:34 | **4h 34m** |
+| Madhapur | 21:15 | 23:40 | 2h 25m |
+| Yusufguda | 21:12 | 23:32 | 2h 20m |
+| Jubilee Hills Checkpost | 21:24 | 23:37 | 2h 13m |
+| Durgam Cheruvu | 21:43 | 23:43 | 2h 00m |
+| Peddamma Gudi | 21:40 | 23:38 | 1h 58m |
+| Raidurg | 21:53 | 23:48 | 1h 55m |
+
+The seven worst are consecutive stations on the Blue Line through the IT
+corridor. Road No 5 Jubilee Hills loses useful bus service at **19:00** — during
+the evening peak — and the metro runs there for another four and a half hours.
+
+By contrast Osmania Medical College and Sultan Bazar, in the old city, hold
+service past midnight. **The corridor where people work latest loses its buses
+up to five hours earlier than the corridor where they don't.**
+
+This is the measurement that needs both feeds. Neither agency can see it alone:
+TGSRTC sees buses stopping, HMRL sees trains running, and only the join shows
+the gap between them. It is also the most direct test of the unified-ticket
+premise — a single ticket cannot help a rider during a window when one of the
+two networks is not running.
+
+The threshold is a judgement call and is stated rather than hidden: fewer than
+five reachable destinations, sustained for the rest of the night. It is
+absolute rather than relative to each station's own peak, because scoring
+against a quarter of peak made Secunderabad East (130 destinations at its
+busiest) "collapse" before Raidurg (18) — a rider does not care what their
+station managed at 6pm, only whether anywhere is reachable now.
+
+Reproduce with `python scripts/build_stranding.py`.
 
 ## What it would take to fix: late-night service allocation
 
@@ -431,9 +477,12 @@ src/connectivity.py   time bands, headways, retention, Transfer Gap Score
 src/destinations.py   terminal parsing, destination-reach metric
 src/pipeline.py       reusable end-to-end run, so assumptions can be varied
 src/mapping.py        interactive Leaflet map: slider, KPI panel, metro lines
+src/collapse.py       hour-by-hour service decay and the stranding window
 src/optimise.py       late-night bus-hour allocation: GA + greedy baseline
 scripts/validate_feeds.py
 scripts/build_atlas.py
 scripts/audit_repair.py   defect audit + repair sensitivity analysis
+scripts/build_stranding.py       last useful bus vs last metro
 scripts/optimise_late_night.py   where to deploy additional bus-hours
+scripts/export_optimisation.py   solutions for the map
 ```

@@ -28,6 +28,9 @@ class Feeds:
         self.bus_stops = normalise_stops(bus["stops"])
         self.bus_stop_times = normalise_stop_times(bus["stop_times"])
         self.stations = metro_stations(metro["stops"])
+        # All metro stops including platforms; needed to roll platform-level
+        # stop_times up to their parent station.
+        self.metro_stops = normalise_stops(metro["stops"])
         self.metro_stop_times = normalise_stop_times(metro["stop_times"])
         self.metro_trips = metro["trips"]
 

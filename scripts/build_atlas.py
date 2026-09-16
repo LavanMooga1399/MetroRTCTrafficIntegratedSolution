@@ -128,9 +128,15 @@ def main() -> None:
     optimisation = (
         json.loads(opt_path.read_text(encoding="utf-8")) if opt_path.exists() else None
     )
+    strand_path = OUT / "stranding.json"
+    stranding = (
+        json.loads(strand_path.read_text(encoding="utf-8"))
+        if strand_path.exists()
+        else None
+    )
     build_interactive_map(
         scored, stations, metro, OUT / "transfer_gap_atlas.html",
-        optimisation=optimisation,
+        optimisation=optimisation, stranding=stranding,
     )
     print(
         "  wrote outputs/transfer_gap_atlas.html"

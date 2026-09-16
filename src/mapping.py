@@ -294,6 +294,27 @@ def _css() -> str:
   .route__n { font: 500 12.5px var(--mono); color: var(--ink-dim); }
   .route.is-forced .route__id { color: var(--alarm); }
 
+  /* stranding view: one row per station, the bar spanning the hours it is
+     reachable by metro but not leaveable by bus */
+  .strand__head { display: grid; grid-template-columns: 118px 1fr 52px; gap: 8px;
+    padding: 0 0 7px; font-size: 11px; color: var(--ink-faint);
+    border-bottom: 1px solid var(--edge); }
+  .strand { display: grid; grid-template-columns: 118px 1fr 52px; gap: 8px;
+    align-items: center; width: 100%; text-align: left; padding: 6px 0;
+    background: none; border: 0; color: inherit; cursor: pointer;
+    font-family: var(--sans); border-bottom: 1px solid rgba(150,170,210,0.07); }
+  .strand:hover, .strand.is-on { background: rgba(255,255,255,0.04); }
+  .strand:focus-visible { outline: 2px solid var(--gold); outline-offset: -2px; }
+  .strand__name { font-size: 12px; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
+  .strand__track { position: relative; height: 15px; border-radius: 3px;
+    background: rgba(255,255,255,0.05); overflow: hidden; }
+  .strand__lit { position: absolute; top: 0; bottom: 0; background: rgba(255,209,102,0.5); }
+  .strand__gap { position: absolute; top: 0; bottom: 0; background: var(--alarm); opacity: .85; }
+  .strand__h { font: 500 11.5px var(--mono); text-align: right; color: var(--alarm); }
+  .strand__scale { display: flex; justify-content: space-between; margin-top: 6px;
+    padding-left: 126px; padding-right: 60px; font: 400 10px var(--mono); color: var(--ink-faint); }
+
   /* legend, bottom right of the map */
   .key { position: absolute; right: 16px; bottom: 30px; z-index: 9999;
     background: rgba(16,23,38,0.93); border: 1px solid var(--edge);
@@ -333,11 +354,38 @@ def _css() -> str:
 """
 
 
-def _html(band_order: list[str], has_optimisation: bool) -> str:
+def _html(band_order: list[str], has_optimisation: bool, has_stranding: bool) -> str:
     ticks = "".join(f"<span>{BAND_TICK[b]}</span>" for b in band_order)
     optimise_tab = (
         '<button id="tab-add" role="tab" aria-selected="false">Intervention</button>'
         if has_optimisation
+        else ""
+    )
+    strand_tab = (
+        '<button id="tab-strand" role="tab" aria-selected="false">Stranding</button>'
+        if has_stranding
+        else ""
+    )
+    strand_panel = (
+        """
+  <section class="panel" id="panel-strand" role="tabpanel" hidden>
+    <p class="lede">The metro keeps running after the buses around it have
+      stopped. This is the window, every weeknight, when a train will still
+      bring you to a station that no bus can take you out of.</p>
+
+    <div class="result">
+      <span class="result__n" id="strand-count">—</span>
+      <span class="result__unit">of 57 stations strand you</span>
+    </div>
+    <p class="result__note" id="strand-note">—</p>
+
+    <div class="strand__head">
+      <span>Station</span><span>Evening service</span><span>Stranded</span>
+    </div>
+    <div id="strand-list"></div>
+    <div class="strand__scale" id="strand-scale"></div>
+  </section>"""
+        if has_stranding
         else ""
     )
     optimise_panel = (
@@ -390,6 +438,7 @@ def _html(band_order: list[str], has_optimisation: bool) -> str:
     <p class="atlas__sub">Does a metro ticket get you home? Hyderabad, all 57 stations.</p>
     <div class="modes" role="tablist">
       <button id="tab-network" role="tab" aria-selected="true">Network</button>
+      {strand_tab}
       {optimise_tab}
     </div>
   </header>
@@ -429,6 +478,7 @@ def _html(band_order: list[str], has_optimisation: bool) -> str:
       </div>
     </div>
   </section>
+{strand_panel}
 {optimise_panel}
 </div>
 
@@ -439,7 +489,8 @@ def _html(band_order: list[str], has_optimisation: bool) -> str:
 """
 
 
-def _script(payload: dict, band_order: list[str], optimisation: dict | None) -> str:
+def _script(payload: dict, band_order: list[str], optimisation: dict | None,
+            stranding: dict | None) -> str:
     return f"""
 (function () {{
   var DATA = {json.dumps(payload)};
@@ -449,9 +500,10 @@ def _script(payload: dict, band_order: list[str], optimisation: dict | None) -> 
   var COLOURS = {json.dumps(GRADE_COLOURS)};
   var WORDS = {json.dumps(GRADE_WORDS)};
   var OPT = {json.dumps(optimisation)};
+  var STRAND = {json.dumps(stranding)};
 
   var map = null, stationLayer = null, routeLayer = null;
-  var mode = 'network', activeRoute = null;
+  var mode = 'network', activeRoute = null, activeStation = null;
 
   function findMap() {{
     var keys = Object.keys(window);
@@ -619,6 +671,75 @@ def _script(payload: dict, band_order: list[str], optimisation: dict | None) -> 
       '<div><i style="border:2px solid #FF4D6D"></i>Still no service</div>';
   }}
 
+  // ---------- stranding ----------
+
+  function renderStranding() {{
+    var H0 = STRAND.hours[0], H1 = STRAND.hours[STRAND.hours.length - 1] + 1;
+    var span = H1 - H0;
+    var pct = function (h) {{ return 100 * (h - H0) / span; }};
+
+    var stranded = STRAND.stations.filter(function (s) {{ return s.stranded_hours > 0; }});
+    $('strand-count').textContent = stranded.length;
+    $('strand-note').textContent =
+      'A station counts as dark once fewer than ' + STRAND.threshold +
+      ' destinations remain reachable by bus. Gold is the evening service; red is ' +
+      'the gap between the last useful bus and the last metro train.';
+
+    $('strand-scale').innerHTML = ['4pm', '8pm', '11pm', '3am']
+      .map(function (t) {{ return '<span>' + t + '</span>'; }}).join('');
+
+    var list = $('strand-list');
+    list.innerHTML = '';
+    STRAND.stations.forEach(function (s) {{
+      if (s.dark_hour == null || s.last_metro_hour == null) return;
+      var b = document.createElement('button');
+      b.className = 'strand' + (activeStation === s.id ? ' is-on' : '');
+      var lit = pct(s.dark_hour);
+      var gapL = pct(s.dark_hour);
+      var gapW = Math.max(0, pct(s.last_metro_hour) - gapL);
+      b.innerHTML =
+        '<span class="strand__name">' + s.name + '</span>' +
+        '<span class="strand__track">' +
+          '<span class="strand__lit" style="left:0;width:' + lit + '%"></span>' +
+          '<span class="strand__gap" style="left:' + gapL + '%;width:' + gapW + '%"></span>' +
+        '</span>' +
+        '<span class="strand__h">' + (s.stranded === '—' ? '' : s.stranded) + '</span>';
+      b.title = s.name + ': last useful bus ' + s.dark_from +
+        ', last metro ' + s.last_metro + ' (peak reach ' + s.peak + ' destinations)';
+      b.addEventListener('click', function () {{
+        activeStation = activeStation === s.id ? null : s.id;
+        drawStranding();
+        if (activeStation) map.setView([s.lat, s.lon], 14, {{animate: true}});
+      }});
+      list.appendChild(b);
+    }});
+  }}
+
+  function drawStranding() {{
+    stationLayer.clearLayers();
+    routeLayer.clearLayers();
+    STRAND.stations.forEach(function (s) {{
+      var h = s.stranded_hours || 0;
+      var on = activeStation === s.id;
+      L.circleMarker([s.lat, s.lon], {{
+        radius: h > 0 ? Math.max(5, Math.min(17, 4 + h * 3.4)) : 4.5,
+        color: h > 0 ? '#FF4D6D' : '#FFD166',
+        weight: on ? 3 : 1.2,
+        opacity: activeStation && !on ? 0.3 : 0.9,
+        fillColor: h > 0 ? '#FF4D6D' : '#FFD166',
+        fillOpacity: activeStation && !on ? 0.1 : 0.35
+      }}).bindTooltip(
+        s.name + ' — stranded ' + (s.stranded === '—' ? 'never' : s.stranded),
+        {{direction: 'top'}}
+      ).addTo(stationLayer);
+    }});
+    renderStranding();
+    $('key-title').textContent = 'Stranded after the last bus';
+    $('key-body').innerHTML =
+      '<div><i style="background:#FF4D6D"></i>Bigger circle, longer gap</div>' +
+      '<div><i style="background:#FFD166"></i>Bus outlasts the metro</div>';
+  }}
+
   function compareRow(kind, name, sub, n, tag, active) {{
     return '<div class="compare__row" data-kind="' + kind + '" data-active="' + active + '">' +
       '<span class="compare__name">' + name +
@@ -660,9 +781,14 @@ def _script(payload: dict, band_order: list[str], optimisation: dict | None) -> 
     $('tab-network').setAttribute('aria-selected', String(isNet));
     $('panel-network').hidden = !isNet;
     if ($('tab-add')) {{
-      $('tab-add').setAttribute('aria-selected', String(!isNet));
-      $('panel-add').hidden = isNet;
+      $('tab-add').setAttribute('aria-selected', String(mode === 'add'));
+      $('panel-add').hidden = mode !== 'add';
     }}
+    if ($('tab-strand')) {{
+      $('tab-strand').setAttribute('aria-selected', String(mode === 'strand'));
+      $('panel-strand').hidden = mode !== 'strand';
+    }}
+    if (mode === 'strand') {{ activeStation = null; drawStranding(); return; }}
     if (isNet) {{
       $('key-title').textContent = 'Bus service near each station';
       $('key-body').innerHTML = Object.keys(WORDS).map(function (g) {{
@@ -696,6 +822,9 @@ def _script(payload: dict, band_order: list[str], optimisation: dict | None) -> 
       $('equity-toggle').addEventListener('change', function () {{ activeRoute = null; drawOptimised(); }});
       $('tab-add').addEventListener('click', function () {{ setMode('add'); }});
     }}
+    if (STRAND) {{
+      $('tab-strand').addEventListener('click', function () {{ setMode('strand'); }});
+    }}
     setMode('network');
   }}
   start();
@@ -710,6 +839,7 @@ def build_interactive_map(
     out_path: Path,
     radius_m: int = 500,
     optimisation: dict | None = None,
+    stranding: dict | None = None,
 ) -> Path:
     """Write the standalone interactive atlas to `out_path`."""
     # control_scale stays off: Folium's renders dual km/mi. A metric-only scale
@@ -738,10 +868,14 @@ def build_interactive_map(
     root = fmap.get_root()
     root.header.add_child(branca.element.Element(_css()))
     root.html.add_child(
-        branca.element.Element(_html(band_order, optimisation is not None))
+        branca.element.Element(
+            _html(band_order, optimisation is not None, stranding is not None)
+        )
     )
     root.script.add_child(
-        branca.element.Element(_script(payload, band_order, optimisation))
+        branca.element.Element(
+            _script(payload, band_order, optimisation, stranding)
+        )
     )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
