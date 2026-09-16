@@ -239,6 +239,10 @@ python scripts/build_atlas.py
 python scripts/audit_repair.py
 ```
 
+```bash
+python scripts/optimise_late_night.py
+```
+
 ### Data
 
 Not committed; both feeds are open and redownloadable.
@@ -279,6 +283,8 @@ this feed.
   (station × radius × band), 855 rows
 - `outputs/ranked_stations_500m.csv` — stations ranked by late-night service
 - `outputs/stations.geojson` — stations with scores, for mapping
+- `outputs/optimisation_budget_sweep.csv` — GA vs greedy across budgets
+- `outputs/late_night_service_plan.csv` — the recommended restart plan
 - `outputs/transfer_gap_atlas.html` — the interactive map: a time slider that
   swaps each station's metrics in place, so dragging evening → night →
   late night shows the bus network around the metro going out, with a live KPI
@@ -288,6 +294,87 @@ The map uses key-free OpenStreetMap tiles darkened client-side rather than a
 dark CartoDB style, which now needs an API key. If tiles fail to load — the
 venue is expected to have poor wifi — the dark background, metro corridors and
 station markers still render, so the demo degrades instead of dying.
+
+## What it would take to fix: late-night service allocation
+
+The Atlas measures the gap. `scripts/optimise_late_night.py` asks the
+operator's question: **given a fixed budget of extra bus-hours after 23:00,
+which services should run?**
+
+Every candidate is a route that *already* serves one of the six robustly-worst
+stations at evening peak and has stopped by the late-night window. The decision
+is which dormant services to restart, not which routes to invent — so the
+answer is an operating-hours change on existing alignments, with vehicles,
+drivers and routes TGSRTC already has.
+
+**The decision variable is the route, not the station.** 52 of the 114
+candidate routes pass two or more of the six target stations. Restarting one is
+a single decision at a single cost benefiting every target station on its
+alignment; pricing it per station charges the operator two or three times for
+one bus. Correcting this roughly doubled measured value at a fixed budget
+(30 → 52 connections for the same 30 hours).
+
+### Result at 30 additional bus-hours
+
+Six routes restarted, 29.7 bus-hours, **52 station–destination connections
+created** — 1.8 per bus-hour.
+
+| Route | Bus-hours | Target stations served | Destinations added |
+|---|---:|---:|---:|
+| 1/25S | 8.0 | 3 | 15 |
+| 107VR | 3.9 | 3 | 13 |
+| 218C | 9.3 | 2 | 11 |
+| 1Z | 4.9 | 3 | 6 |
+| 186 | 2.4 | 2 | 5 |
+| 10Y/F | 1.1 | 2 | 3 |
+
+| Station | Reachable before | Gained |
+|---|---:|---:|
+| Gandhi Hospital | 0 | +12 |
+| Musheerabad | 1 | +11 |
+| RTC Cross Roads | 2 | +11 |
+| Erragadda | 3 | +10 |
+| Bharat Nagar | 3 | +8 |
+| **Raidurg** | **0** | **0** |
+
+### The equity finding
+
+Told only to maximise connections, **the optimiser abandons Raidurg** — the one
+station with no late-night bus service at all. Its routes are long and serve no
+other target station, so every bus-hour spent there buys fewer connections than
+elsewhere. Efficiency and need point in opposite directions.
+
+Forcing it back in, at the same budget: restart route 195W for 5.9 bus-hours,
+Raidurg goes 0 → 7 destinations, and total connections fall 52 → 51.
+
+**Reconnecting Raidurg costs about 2% of the network-wide gain.**
+
+That is the number worth putting in front of a planner. It is reported rather
+than folded into the fitness as an equity weight, because a weight would decide
+the trade-off invisibly and unarguably; a planner should make this call.
+
+### An honest note on the genetic algorithm
+
+Against a greedy best-ratio baseline the GA finds **0% to 4.3% more**
+connections depending on budget, converging within about 10 generations:
+
+| Budget (bus-h) | Greedy | GA | Lift |
+|---:|---:|---:|---:|
+| 10 | 23 | 24 | +4.3% |
+| 20 | 39 | 40 | +2.6% |
+| 30 | 50 | 52 | +4.0% |
+| 50 | 72 | 73 | +1.4% |
+| 100 | 108 | 108 | 0.0% |
+
+Budgeted maximum coverage has a well-known (1 − 1/e) greedy guarantee, and this
+instance sits close to it. Claiming the GA was indispensable when a short greedy
+gets within a few percent would not survive questioning, so the baseline ships
+in the code and the comparison runs every time.
+
+The GA earns its place by being what *proves* greedy is near-optimal here, and
+by generalising to constraints this model does not yet carry — vehicle chaining
+between routes, depot availability, crew hours — where the greedy ratio argument
+breaks down.
 
 ## Stated limitations
 
@@ -308,6 +395,9 @@ results.
   arterial is not a 350 m transfer. This is arguably the most important missing
   variable.
 - **MMTS is not included** — not in the provided feeds.
+- **The optimiser ignores vehicle chaining, depots and crew hours.** It costs a
+  restarted route as round-trip vehicle-hours and assumes a bus is available.
+  Real scheduling would couple the routes together.
 - **Weekends cannot be analysed** for the bus network, per the calendar above.
 
 ## What would make this substantially better
@@ -331,7 +421,9 @@ src/connectivity.py   time bands, headways, retention, Transfer Gap Score
 src/destinations.py   terminal parsing, destination-reach metric
 src/pipeline.py       reusable end-to-end run, so assumptions can be varied
 src/mapping.py        interactive Leaflet map: slider, KPI panel, metro lines
+src/optimise.py       late-night bus-hour allocation: GA + greedy baseline
 scripts/validate_feeds.py
 scripts/build_atlas.py
 scripts/audit_repair.py   defect audit + repair sensitivity analysis
+scripts/optimise_late_night.py   where to deploy additional bus-hours
 ```

@@ -1,0 +1,6 @@
+budget_hours,greedy_new_pairs,ga_new_pairs,ga_lift,hours_used,stations_reconnected,gain_Raidurg,gain_Gandhi Hospital,gain_Musheerabad,gain_RTC Cross Roads,gain_Bharat Nagar,gain_Erragadda
+10,23,24,0.0435,9.3,5,0,7,6,6,2,3
+20,39,40,0.0256,19.9,6,2,10,9,9,4,6
+30,50,52,0.04,29.7,5,0,12,11,11,8,10
+50,72,73,0.0139,49.7,6,8,15,14,14,10,12
+100,108,108,0.0,100.0,6,13,21,20,20,15,19
