@@ -221,19 +221,37 @@ def _css() -> str:
   .ticks { display: flex; justify-content: space-between;
     font: 400 11px var(--mono); color: var(--ink-faint); }
 
-  /* metric rows: an inline bar encodes the value against the day's peak, so
-     the collapse is visible before any number is read */
-  .metric { padding: 14px 0 12px; border-top: 1px solid var(--edge); }
-  .metric:first-of-type { margin-top: 18px; }
-  .metric__top { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
-  .metric__label { font-size: 14px; font-weight: 500; }
-  .metric__value { font: 600 22px var(--mono); letter-spacing: -0.02em; }
-  .metric__note { margin: 2px 0 0; font-size: 12px; color: var(--ink-faint); }
-  .metric__track { height: 3px; margin-top: 9px; background: rgba(255,255,255,0.07); border-radius: 2px; }
-  .metric__fill { height: 100%; background: var(--gold); border-radius: 2px;
+  /* Readings laid out as a timetable grid rather than cards: hairlines carry
+     the structure, and an inline bar encodes each value against the day's
+     peak so the collapse is visible before any number is read. */
+  .kpis { display: grid; grid-template-columns: 1fr 1fr; margin: 20px 0 0;
+    border-top: 1px solid var(--edge); }
+  .kpi { padding: 15px 14px 14px 0; border-bottom: 1px solid var(--edge); }
+  .kpi:nth-child(even) { padding-left: 16px; border-left: 1px solid var(--edge); }
+  .kpi__n { display: block; font: 600 27px/1.05 var(--mono);
+    letter-spacing: -0.03em; transition: color .2s; }
+  .kpi__unit { display: block; margin-top: 5px; font-size: 12.5px; font-weight: 500; }
+  .kpi__qual { display: block; margin-top: 2px; font-size: 11.5px; line-height: 1.35;
+    color: var(--ink-faint); }
+  .kpi__track { height: 3px; margin-top: 10px; background: rgba(255,255,255,0.07);
+    border-radius: 2px; }
+  .kpi__fill { height: 100%; width: 0; background: var(--gold); border-radius: 2px;
     transition: width .28s ease; }
-  .is-alarm .metric__value { color: var(--alarm); }
-  .is-alarm .metric__fill { background: var(--alarm); }
+  .is-alarm .kpi__n { color: var(--alarm); }
+  .is-alarm .kpi__fill { background: var(--alarm); }
+
+  /* both solutions, side by side, so the trade-off is read rather than toggled */
+  .compare { margin: 18px 0 0; border-top: 1px solid var(--edge); }
+  .compare__row { display: grid; grid-template-columns: 1fr auto auto; gap: 12px;
+    align-items: baseline; padding: 11px 8px 11px 0;
+    border-bottom: 1px solid var(--edge); transition: opacity .18s; }
+  .compare__row[data-active="false"] { opacity: 0.42; }
+  .compare__name { font-size: 13px; font-weight: 500; }
+  .compare__sub { display: block; margin-top: 2px; font-size: 11.5px; color: var(--ink-faint); }
+  .compare__n { font: 600 17px var(--mono); }
+  .compare__tag { font: 500 11.5px var(--mono); color: var(--ink-faint); min-width: 74px;
+    text-align: right; }
+  .compare__row[data-kind="equity"] .compare__n { color: var(--alarm); }
 
   /* optimise mode */
   .lede { margin: 0 0 18px; font-size: 13.5px; line-height: 1.5; color: var(--ink-dim); }
@@ -318,38 +336,39 @@ def _css() -> str:
 def _html(band_order: list[str], has_optimisation: bool) -> str:
     ticks = "".join(f"<span>{BAND_TICK[b]}</span>" for b in band_order)
     optimise_tab = (
-        '<button id="tab-add" role="tab" aria-selected="false">Where to add buses</button>'
+        '<button id="tab-add" role="tab" aria-selected="false">Intervention</button>'
         if has_optimisation
         else ""
     )
     optimise_panel = (
         """
   <section class="panel" id="panel-add" role="tabpanel" hidden>
-    <p class="lede">Bus service near the metro all but stops after 11pm. If
-      TGSRTC could run a few more bus-hours in that window, these are the
-      routes worth restarting.</p>
+    <p class="lede">Where could additional service help? Bus service near the
+      metro all but stops after 11pm. These are the existing routes worth
+      keeping on the road in that window.</p>
 
     <p class="clock" id="budget-label">30 bus-hours</p>
-    <p class="clock__name">added after 11pm</p>
+    <p class="clock__name">added between 11pm and 4am</p>
     <input class="slider" id="budget" type="range" min="0" max="4" step="1" value="2"
            aria-label="Extra bus-hours available after 11pm">
     <div class="ticks" id="budget-ticks"></div>
 
     <div class="result">
       <span class="result__n" id="opt-connections">—</span>
-      <span class="result__unit">new connections</span>
+      <span class="result__unit">new station–destination connections</span>
     </div>
     <p class="result__note" id="opt-note">—</p>
 
     <div class="equity" id="equity" hidden>
       <div class="equity__row">
-        <span class="equity__label" id="equity-label">Reconnect Raidurg</span>
+        <span class="equity__label">Minimum service guarantee</span>
         <label class="switch">
           <input type="checkbox" id="equity-toggle" aria-describedby="equity-note">
           <span></span>
         </label>
       </div>
       <p class="equity__note" id="equity-note">—</p>
+      <div class="compare" id="compare"></div>
     </div>
 
     <div class="routes">
@@ -370,52 +389,44 @@ def _html(band_order: list[str], has_optimisation: bool) -> str:
     <h1 class="atlas__name">Transfer Gap Atlas</h1>
     <p class="atlas__sub">Does a metro ticket get you home? Hyderabad, all 57 stations.</p>
     <div class="modes" role="tablist">
-      <button id="tab-network" role="tab" aria-selected="true">Through the day</button>
+      <button id="tab-network" role="tab" aria-selected="true">Network</button>
       {optimise_tab}
     </div>
   </header>
 
   <section class="panel" id="panel-network" role="tabpanel">
+    <p class="lede">Where does bus–metro connectivity break down?</p>
     <p class="clock" id="clock">—</p>
     <p class="clock__name" id="clock-name">—</p>
     <input class="slider" id="band" type="range" min="0" max="{len(band_order) - 1}"
            step="1" value="2" aria-label="Time of day">
     <div class="ticks">{ticks}</div>
 
-    <div class="metric" id="m-dep">
-      <div class="metric__top">
-        <span class="metric__label">Buses an hour</span>
-        <span class="metric__value" id="v-dep">—</span>
+    <div class="kpis">
+      <div class="kpi" id="m-served">
+        <span class="kpi__n" id="v-served">—</span>
+        <span class="kpi__unit">metro stations</span>
+        <span class="kpi__qual">still connected — at least one bus within 500 m</span>
+        <div class="kpi__track"><div class="kpi__fill" id="f-served"></div></div>
       </div>
-      <p class="metric__note">Leaving from stops within a 500 m walk of a typical station</p>
-      <div class="metric__track"><div class="metric__fill" id="f-dep"></div></div>
-    </div>
-
-    <div class="metric" id="m-dest">
-      <div class="metric__top">
-        <span class="metric__label">Places you can get to</span>
-        <span class="metric__value" id="v-dest">—</span>
+      <div class="kpi" id="m-dep">
+        <span class="kpi__n" id="v-dep">—</span>
+        <span class="kpi__unit">buses per hour</span>
+        <span class="kpi__qual">median across metro stations, within 500 m</span>
+        <div class="kpi__track"><div class="kpi__fill" id="f-dep"></div></div>
       </div>
-      <p class="metric__note">Separate destinations those buses actually run to</p>
-      <div class="metric__track"><div class="metric__fill" id="f-dest"></div></div>
-    </div>
-
-    <div class="metric" id="m-ret">
-      <div class="metric__top">
-        <span class="metric__label">Service still running</span>
-        <span class="metric__value" id="v-ret">—</span>
+      <div class="kpi" id="m-dest">
+        <span class="kpi__n" id="v-dest">—</span>
+        <span class="kpi__unit">destinations</span>
+        <span class="kpi__qual">median reachable by bus from a metro station</span>
+        <div class="kpi__track"><div class="kpi__fill" id="f-dest"></div></div>
       </div>
-      <p class="metric__note">Share of the same station's 4–8pm service</p>
-      <div class="metric__track"><div class="metric__fill" id="f-ret"></div></div>
-    </div>
-
-    <div class="metric" id="m-served">
-      <div class="metric__top">
-        <span class="metric__label">Stations with a bus nearby</span>
-        <span class="metric__value" id="v-served">—</span>
+      <div class="kpi" id="m-ret">
+        <span class="kpi__n" id="v-ret">—</span>
+        <span class="kpi__unit">evening service left</span>
+        <span class="kpi__qual">median share of the same station's 4–8pm service</span>
+        <div class="kpi__track"><div class="kpi__fill" id="f-ret"></div></div>
       </div>
-      <p class="metric__note">Any bus at all within a 500 m walk</p>
-      <div class="metric__track"><div class="metric__fill" id="f-served"></div></div>
     </div>
   </section>
 {optimise_panel}
@@ -509,20 +520,20 @@ def _script(payload: dict, band_order: list[str], optimisation: dict | None) -> 
     var k = DATA.kpis[band] || {{}};
     $('clock').textContent = CLOCK[band];
     $('clock-name').textContent = NAMES[band];
-    setMetric('dep', k.dep, k.dep, peak('dep'), k.dep != null ? String(k.dep) : '—');
-    setMetric('dest', k.dest, k.dest, peak('dest'), k.dest != null ? String(k.dest) : '—');
-    setMetric('ret', k.ret, k.ret, 1, k.ret != null ? (k.ret * 100).toFixed(1) + '%' : '—');
-    setMetric('served', k.served, k.served, k.total || 57,
-              k.served != null ? k.served + ' of ' + k.total : '—');
+    setKpi('served', k.served != null ? k.served + ' / ' + k.total : '—',
+           k.served, k.total || 57);
+    setKpi('dep', k.dep != null ? String(k.dep) : '—', k.dep, peak('dep'));
+    setKpi('dest', k.dest != null ? String(k.dest) : '—', k.dest, peak('dest'));
+    setKpi('ret', k.ret != null ? (k.ret * 100).toFixed(1) + '%' : '—', k.ret, 1);
     var alarm = k.ret != null && k.ret < 0.15;
     ['dep', 'dest', 'ret', 'served'].forEach(function (id) {{
       $('m-' + id).classList.toggle('is-alarm', alarm);
     }});
   }}
 
-  function setMetric(id, value, fillValue, max, text) {{
+  function setKpi(id, text, value, max) {{
     $('v-' + id).textContent = text;
-    var pct = (fillValue == null || !max) ? 0 : Math.max(0, Math.min(100, 100 * fillValue / max));
+    var pct = (value == null || !max) ? 0 : Math.max(0, Math.min(100, 100 * value / max));
     $('f-' + id).style.width = pct + '%';
   }}
 
@@ -556,12 +567,19 @@ def _script(payload: dict, band_order: list[str], optimisation: dict | None) -> 
     var eq = s.base.equity;
     $('equity').hidden = !eq;
     if (eq) {{
-      $('equity-label').textContent = 'Reconnect ' + eq.station;
       $('equity-note').textContent = eq.station + ' has no late-night bus at all, but its ' +
         'routes are long and shared with no other gap station, so maximising connections ' +
-        'skips it. Restarting route ' + eq.forced_route + ' for ' + eq.forced_hours.toFixed(1) +
-        ' bus-hours gives it ' + eq.station_gain + ' destinations and costs ' + eq.cost +
-        ' connections elsewhere.';
+        'skips it. Requiring service there restarts route ' + eq.forced_route + ' for ' +
+        eq.forced_hours.toFixed(1) + ' bus-hours.';
+      // Both scenarios stay on screen. The trade-off is something a planner
+      // should read side by side, not discover by flipping a switch.
+      $('compare').innerHTML =
+        compareRow('efficiency', 'Efficiency only', 'maximise connections',
+                   s.base.connections, eq.station + ': 0', !s.equityOn) +
+        compareRow('equity', 'Minimum service', eq.station + ' must be served',
+                   eq.connections, eq.station + ': ' + eq.station_gain, s.equityOn);
+    }} else {{
+      $('compare').innerHTML = '';
     }}
 
     // Target stations: filled where the plan reaches them, hollow where not.
@@ -599,6 +617,14 @@ def _script(payload: dict, band_order: list[str], optimisation: dict | None) -> 
       '<div><i style="background:#FFD166"></i>Route to restart</div>' +
       '<div><i style="background:#FFD166;opacity:.45"></i>Station reconnected</div>' +
       '<div><i style="border:2px solid #FF4D6D"></i>Still no service</div>';
+  }}
+
+  function compareRow(kind, name, sub, n, tag, active) {{
+    return '<div class="compare__row" data-kind="' + kind + '" data-active="' + active + '">' +
+      '<span class="compare__name">' + name +
+        '<span class="compare__sub">' + sub + '</span></span>' +
+      '<span class="compare__n">' + n + '</span>' +
+      '<span class="compare__tag">' + tag + '</span></div>';
   }}
 
   function renderRouteList(s) {{
