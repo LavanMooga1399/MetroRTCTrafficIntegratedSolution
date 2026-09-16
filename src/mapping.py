@@ -139,7 +139,10 @@ def _panel_css() -> str:
     box-shadow: 0 8px 28px rgba(0,0,0,0.45);
   }
   .tga-panel { top: 14px; left: 14px; width: 310px; }
-  .tga-legend { bottom: 22px; left: 14px; width: 190px; padding: 12px 14px; }
+  /* Bottom-RIGHT, clear of the scale bar at bottom-left and sitting above the
+     attribution line. On a narrow projector the legend and the scale bar
+     collided when both were on the left. */
+  .tga-legend { bottom: 34px; right: 14px; width: 190px; padding: 12px 14px; }
   .tga-title { font-size: 12px; letter-spacing: .09em; text-transform: uppercase;
     color: #8b93a7; margin: 0 0 2px; }
   .tga-band { font-size: 19px; font-weight: 600; margin: 0 0 12px; color: #fff; }
@@ -290,6 +293,7 @@ def _script(payload: dict, band_order: list[str], labels: dict, colours: dict) -
     map = findMap();
     if (!map) {{ return window.setTimeout(start, 60); }}
     layer = L.layerGroup().addTo(map);
+    L.control.scale({{imperial: false, position: 'bottomleft'}}).addTo(map);
     var slider = document.getElementById('tga-slider');
     slider.addEventListener('input', function () {{ draw(+this.value); }});
     draw(+slider.value);
@@ -312,11 +316,14 @@ def build_interactive_map(
     # key-free, and the CSS filter below darkens them client-side. If tiles fail
     # to load entirely, the dark page background stays and the metro lines and
     # station markers still read -- the demo degrades instead of dying.
+    # control_scale stays off: Folium's version renders dual km/mi units. The
+    # JS below adds a metric-only scale instead -- a "3 mi" readout on a slide
+    # in Hyderabad is noise.
     fmap = folium.Map(
         location=HYDERABAD_CENTRE,
         zoom_start=12,
         tiles="OpenStreetMap",
-        control_scale=True,
+        control_scale=False,
     )
 
     for line in _metro_lines(metro_feed):
