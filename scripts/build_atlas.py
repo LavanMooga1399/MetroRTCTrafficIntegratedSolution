@@ -23,6 +23,7 @@ from src.connectivity import (  # noqa: E402
     transfer_gap_score,
 )
 from src.destinations import destination_reach  # noqa: E402
+from src.mapping import build_interactive_map  # noqa: E402
 from src.gtfs_loader import (  # noqa: E402
     load_feed,
     metro_stations,
@@ -119,6 +120,9 @@ def main() -> None:
     )
     geo.to_file(OUT / "stations.geojson", driver="GeoJSON")
     print(f"  wrote outputs/stations.geojson")
+
+    build_interactive_map(scored, stations, metro, OUT / "transfer_gap_atlas.html")
+    print(f"  wrote outputs/transfer_gap_atlas.html")
 
     print("\n=== headline ===")
     for band in TIME_BANDS:

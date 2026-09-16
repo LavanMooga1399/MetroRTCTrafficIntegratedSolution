@@ -279,6 +279,15 @@ this feed.
   (station × radius × band), 855 rows
 - `outputs/ranked_stations_500m.csv` — stations ranked by late-night service
 - `outputs/stations.geojson` — stations with scores, for mapping
+- `outputs/transfer_gap_atlas.html` — the interactive map: a time slider that
+  swaps each station's metrics in place, so dragging evening → night →
+  late night shows the bus network around the metro going out, with a live KPI
+  panel. Self-contained; open it in any browser.
+
+The map uses key-free OpenStreetMap tiles darkened client-side rather than a
+dark CartoDB style, which now needs an API key. If tiles fail to load — the
+venue is expected to have poor wifi — the dark background, metro corridors and
+station markers still render, so the demo degrades instead of dying.
 
 ## Stated limitations
 
@@ -321,6 +330,7 @@ src/spatial.py        EPSG:32644 buffers, 50 m stop clustering, spatial join
 src/connectivity.py   time bands, headways, retention, Transfer Gap Score
 src/destinations.py   terminal parsing, destination-reach metric
 src/pipeline.py       reusable end-to-end run, so assumptions can be varied
+src/mapping.py        interactive Leaflet map: slider, KPI panel, metro lines
 scripts/validate_feeds.py
 scripts/build_atlas.py
 scripts/audit_repair.py   defect audit + repair sensitivity analysis
