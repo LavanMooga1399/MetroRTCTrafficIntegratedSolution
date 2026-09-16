@@ -111,10 +111,27 @@ def _with_geometry(stop_times: pd.DataFrame, stops: pd.DataFrame) -> pd.DataFram
     return st
 
 
+def route_speeds(stop_times: pd.DataFrame, stops: pd.DataFrame, trips: pd.DataFrame) -> pd.Series:
+    """Infer a per-route speed by dividing the defect out of the published times.
+
+    If the published gap is c * stop_sequence, then c is the gap the feed would
+    have carried without the multiplier, and distance / c gives a speed. Taking
+    the median per route lets a long suburban route run faster than a dense
+    inner-city one instead of forcing a single citywide constant.
+    """
+    st = _with_geometry(stop_times, stops)
+    st["gap_s"] = st.groupby("trip_id")["departure_time_s"].diff()
+    st = st.merge(trips[["trip_id", "route_id"]], on="trip_id", how="left")
+    st = st.dropna(subset=["gap_s", "dist_km", "route_id"])
+    st = st[(st["dist_km"] > 0.05) & (st["stop_sequence"] > 0)]
+    implied = st["dist_km"] / ((st["gap_s"] / st["stop_sequence"]) / 3600)
+    return implied.groupby(st["route_id"]).median().clip(8, 45)
+
+
 def rebuild_times(
     stop_times: pd.DataFrame,
     stops: pd.DataFrame,
-    speed_kmph: float = DEFAULT_SPEED_KMPH,
+    speed_kmph: float | pd.Series = DEFAULT_SPEED_KMPH,
     circuity: float = CIRCUITY_FACTOR,
     dwell_s: float = DWELL_SECONDS,
 ) -> pd.DataFrame:
@@ -126,7 +143,12 @@ def rebuild_times(
     st = _with_geometry(stop_times, stops)
     st["dist_km"] = st["dist_km"].fillna(0.0)
 
-    run_s = (st["dist_km"] * circuity / speed_kmph) * 3600
+    if isinstance(speed_kmph, pd.Series):
+        # Per-trip speeds, already aligned to st's row order by the caller.
+        speed = speed_kmph.reindex(st.index).fillna(DEFAULT_SPEED_KMPH)
+    else:
+        speed = speed_kmph
+    run_s = (st["dist_km"] * circuity / speed) * 3600
     # First stop of each trip contributes no running time and no dwell.
     is_first = st["stop_sequence"] == st.groupby("trip_id")["stop_sequence"].transform("min")
     leg_s = run_s + dwell_s

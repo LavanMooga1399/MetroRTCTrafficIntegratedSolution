@@ -17,10 +17,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.connectivity import (  # noqa: E402
     TIME_BANDS,
+    band_of,
     complete_grid,
     route_departures,
     transfer_gap_score,
 )
+from src.destinations import destination_reach  # noqa: E402
 from src.gtfs_loader import (  # noqa: E402
     load_feed,
     metro_stations,
@@ -76,14 +78,22 @@ def main() -> None:
     scored = transfer_gap_score(pairs, departures)
     scored = complete_grid(scored, stations, WALK_RADII_M)
 
+    bus_stop_times["band"] = band_of(bus_stop_times["departure_time_s_est"])
+    reach = destination_reach(pairs, bus_stop_times, bus["trips"])
+    scored = scored.merge(
+        reach[["station_id", "radius_m", "band", "n_destinations"]],
+        on=["station_id", "radius_m", "band"], how="left",
+    )
+    scored["n_destinations"] = scored["n_destinations"].fillna(0).astype(int)
+
     names = stations.set_index("stop_id")["stop_name"]
     scored["station_name"] = scored["station_id"].map(names)
     scored = scored[
         [
             "station_id", "station_name", "radius_m", "band", "n_routes",
-            "n_departures", "departures_per_hour", "retention", "grade",
-            "best_headway_min", "expected_wait_min", "nearest_bus_stop_m",
-            "usable",
+            "n_destinations", "n_departures", "departures_per_hour", "retention",
+            "grade", "best_headway_min", "expected_wait_min",
+            "nearest_bus_stop_m", "usable",
         ]
     ].sort_values(["station_name", "radius_m", "band"])
 
@@ -121,10 +131,16 @@ def main() -> None:
             f"within 500m | retention {b['retention'].median():>5.1%} | "
             f"{dead} stations with no bus at all"
         )
+    print("\n=== distinct bus destinations reachable within 500m (median) ===")
+    for band in TIME_BANDS:
+        b = at500[at500["band"] == band]
+        if not b.empty:
+            print(f"  {band:<14} {b['n_destinations'].median():>5.0f}")
+
     worst = at500[at500["band"] == "late_night"].nsmallest(8, "departures_per_hour")
     print("\n=== worst 8 stations, late night (23:00-04:00), 500m ===")
-    print(worst[["station_name", "departures_per_hour", "retention", "grade"]]
-          .to_string(index=False))
+    print(worst[["station_name", "departures_per_hour", "n_destinations",
+                 "retention", "grade"]].to_string(index=False))
 
 
 if __name__ == "__main__":

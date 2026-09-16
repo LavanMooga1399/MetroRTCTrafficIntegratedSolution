@@ -90,6 +90,80 @@ the TomTom 2025 Hyderabad rush-hour mean of 16.1 km/h.
 
 Reconstructed times are **estimates** and are labelled as such.
 
+### The defect is one failure mode, not several
+
+Fitting `gap = c × stop_sequence` through the origin for every trip with at
+least 5 stops (41,975 trips):
+
+| | |
+|---|---:|
+| Median R² | **0.983** |
+| Trips with R² > 0.90 | 94.7% |
+| Trips with R² > 0.75 | 98.7% |
+| Trips with R² < 0.50 | 0.4% |
+| Median `c` | 2.23 min |
+
+Fit quality is uniform across trip lengths. This is a single systematic
+generator bug, not a scatter of bad records, which is what makes it correctable
+rather than merely disqualifying.
+
+### The late-night finding does not depend on the repair
+
+This is the load-bearing check, and it is why the headline can be presented as
+a finding rather than a hypothesis.
+
+**Every trip's first departure is taken verbatim from the feed.** Counting how
+many bus trips *set out* in each band uses no reconstruction at all:
+
+| Band | Trips starting | Per hour | Share of peak |
+|---|---:|---:|---:|
+| Morning peak | 8,004 | 2,668 | 95.9% |
+| Midday | 15,585 | 2,598 | 93.3% |
+| Evening peak | 11,131 | 2,783 | 100.0% |
+| Night | 3,631 | 1,210 | 43.5% |
+| **Late night** | **122** | **24.4** | **0.9%** |
+
+The collapse is in the published data. The repair moves a bus's arrival at a
+mid-route stop by minutes; it cannot manufacture a 99% drop in how many buses
+leave the depot.
+
+### Station rankings are stable across repair assumptions
+
+Four plausible repairs, plus the feed's own defective times as a control:
+
+| Model | Speed | Circuity | Dwell |
+|---|---:|---:|---:|
+| A (default) | 20 km/h | 1.3 | 20 s |
+| B | 18 km/h | 1.4 | 30 s |
+| C | 25 km/h | 1.2 | 10 s |
+| D | 14 km/h | 1.5 | 45 s |
+
+Spearman rank correlation of late-night service across stations:
+
+| | A | B | C | D | published |
+|---|---:|---:|---:|---:|---:|
+| **A** | 1.000 | 0.975 | 0.933 | 0.915 | 0.689 |
+| **B** | 0.975 | 1.000 | 0.911 | 0.947 | 0.713 |
+| **C** | 0.933 | 0.911 | 1.000 | 0.850 | 0.585 |
+| **D** | 0.915 | 0.947 | 0.850 | 1.000 | 0.733 |
+
+Six stations sit in the worst ten under **all four** repair models:
+
+| Station | A | B | C | D | published |
+|---|---:|---:|---:|---:|---:|
+| Raidurg | 0.0 | 0.4 | 0.0 | 0.8 | 12.4 |
+| Gandhi Hospital | 0.2 | 0.6 | 0.4 | 2.2 | 56.4 |
+| Musheerabad | 0.4 | 0.4 | 0.2 | 1.8 | 59.2 |
+| RTC Cross Roads | 0.6 | 1.2 | 0.4 | 2.0 | 62.2 |
+| Bharat Nagar | 1.0 | 2.0 | 0.4 | 3.8 | 69.2 |
+| Erragadda | 1.4 | 2.0 | 0.6 | 3.8 | 81.6 |
+
+Note the last column. Using the feed's published times, every one of these
+stations looks adequately served at night. **Without the repair you do not get
+a weaker version of this finding — you get the opposite of it.**
+
+Reproduce with `python scripts/audit_repair.py`.
+
 ## Why the headline metric is retention, not waiting time
 
 The obvious metric — combined expected wait across all nearby routes,
@@ -106,6 +180,47 @@ So `expected_wait_min` is reported as a secondary column, and the headline is
 temporal: **what share of a station's own peak service survives into the
 night.** That is the quantity the thesis is about, and it discriminates sharply.
 
+### Destination reach: a first cut at "useful", without demand data
+
+Counting routes does not answer whether a transfer opens the city up. But 79%
+of TGSRTC `trip_short_name` values encode their terminals
+("219-SILVER ROUTE-SECUNDERABAD-TO-PATANCHERUVU"), so the *destination* of each
+trip can be parsed straight out of the feed. Counting distinct destinations
+reachable from a station measures reach rather than volume.
+
+Median distinct bus destinations within 500 m of a metro station:
+
+| Band | Destinations |
+|---|---:|
+| Morning peak | 54 |
+| Midday | 60 |
+| Evening peak | 51 |
+| Night | 32 |
+| **Late night** | **6** |
+
+The saturated interchanges do not escape it. Secunderabad East — the station
+with 341 route_ids — falls from **208 destinations to 13** after 23:00, a 94%
+loss of reach. Volume and reach collapse together.
+
+The sharpest pattern is geographic. Along the Blue Line through the IT
+corridor, late-night destination reach is:
+
+| Station | Evening peak | Late night |
+|---|---:|---:|
+| Raidurg | 26 | **0** |
+| Road No 5 Jubilee Hills | 9 | **0** |
+| Yusufguda | 18 | **0** |
+| Durgam Cheruvu | 17 | 1 |
+| HITEC City | 37 | 1 |
+
+This is not a scatter of unlucky stations. **The entire western IT corridor
+loses its bus network after 23:00** — the corridor whose late-shift workers are
+precisely the people a unified ticket is meant to move out of private vehicles,
+in the window when Hyderabad's fatal crashes concentrate.
+
+This is a proxy. It measures reach, not whether anyone wants to go there;
+that still needs AFC or ridership data.
+
 ## Running it
 
 ```bash
@@ -118,6 +233,10 @@ python scripts/validate_feeds.py
 
 ```bash
 python scripts/build_atlas.py
+```
+
+```bash
+python scripts/audit_repair.py
 ```
 
 ### Data
@@ -168,7 +287,11 @@ results.
 
 - **Straight-line buffers, not street-network walks.** A 300 m buffer can be a
   600 m walk. Fixing this needs OSM + `osmnx`.
-- **Reconstructed bus times**, for the reason above. Schedule, not reliability.
+- **Reconstructed bus times**, for the reason above — though the headline
+  survives all four repair models tested, and rests on observed trip starts.
+  Schedule, not reliability, either way.
+- **Destination reach is a proxy for usefulness**, parsed from trip names. It
+  measures where buses go, not where people want to go.
 - **No demand weighting.** All stations are weighted equally; real
   prioritisation needs AFC tap data or ridership by stop.
 - **No physical access quality.** Footpath condition, crossing safety and
@@ -196,6 +319,9 @@ src/gtfs_loader.py    feed loading, 24:xx-safe time parsing, station dedupe
 src/gtfs_repair.py    diagnosis and correction of the TGSRTC time defect
 src/spatial.py        EPSG:32644 buffers, 50 m stop clustering, spatial join
 src/connectivity.py   time bands, headways, retention, Transfer Gap Score
+src/destinations.py   terminal parsing, destination-reach metric
+src/pipeline.py       reusable end-to-end run, so assumptions can be varied
 scripts/validate_feeds.py
 scripts/build_atlas.py
+scripts/audit_repair.py   defect audit + repair sensitivity analysis
 ```
