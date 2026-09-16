@@ -285,10 +285,20 @@ this feed.
 - `outputs/stations.geojson` — stations with scores, for mapping
 - `outputs/optimisation_budget_sweep.csv` — GA vs greedy across budgets
 - `outputs/late_night_service_plan.csv` — the recommended restart plan
-- `outputs/transfer_gap_atlas.html` — the interactive map: a time slider that
-  swaps each station's metrics in place, so dragging evening → night →
-  late night shows the bus network around the metro going out, with a live KPI
-  panel. Self-contained; open it in any browser.
+- `outputs/transfer_gap_atlas.html` — the decision-support tool, in two modes:
+  **Through the day** drags a slider from morning to late night and swaps each
+  station's metrics in place, so the bus network around the metro visibly goes
+  out; **Where to add buses** picks a budget of extra late-night bus-hours and
+  draws the routes the optimiser would restart, with the Raidurg equity
+  trade-off as a toggle. Self-contained; open it in any browser.
+- `outputs/optimisation.json` — solutions at each budget, consumed by the map
+
+Metric names are written for a planner reading them cold — "Buses an hour",
+"Places you can get to", "Service still running" — rather than the column names
+underneath them.
+
+Build order: `export_optimisation.py` (minutes, GA) then `build_atlas.py`
+(seconds, reads the JSON if present).
 
 The map uses key-free OpenStreetMap tiles darkened client-side rather than a
 dark CartoDB style, which now needs an API key. If tiles fail to load — the

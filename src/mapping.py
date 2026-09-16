@@ -1,14 +1,28 @@
-"""Interactive Transfer Gap Atlas map.
+"""The Transfer Gap Atlas: an interactive decision-support map.
 
-The point of this map is not to show where the metro stations are. It is to let
-someone drag a slider from evening peak to late night and watch the bus network
-around those stations go out, corridor by corridor.
+Two modes over one map.
 
-That requires the slider to swap each station's underlying metrics rather than
-toggling five pre-rendered layers, so the markers resize and recolour in place
-and the eye tracks the change. Folium supplies the base map and the metro
-lines; a small amount of Leaflet-level JavaScript does the rest, which is far
-less code than fighting TimestampedGeoJson into behaving this way.
+  Network   — drag through the day and watch bus service around the metro go
+              out. The slider swaps each station's metrics in place rather than
+              toggling pre-rendered layers, so markers resize and dim as you
+              move and the eye tracks the change.
+
+  Where to add — the optimiser's answer. Pick a budget of extra bus-hours after
+              23:00 and the routes it would restart are drawn on the map, with
+              the equity trade-off as a toggle rather than a hidden weight.
+
+DESIGN NOTES
+------------
+The vernacular here is a departure board, not a dashboard. The hero is the time
+window set large, because the whole finding is what time it is. Service is
+encoded primarily by LUMINANCE -- gold when running, dimming through ember, a
+hollow ring when gone -- so "the network goes dark" is literal and legible
+before anyone reads the legend, and stays ordered for colour-blind viewers.
+Saturated hue is reserved for the three metro corridors, using the official
+colours that ship in the HMRL feed, so nothing competes with them.
+
+Metric labels are written for a planner reading them cold: "Buses an hour",
+not "median departures_per_hour".
 """
 
 from __future__ import annotations
@@ -22,29 +36,49 @@ import pandas as pd
 
 from .connectivity import TIME_BANDS
 
-BAND_LABELS = {
-    "morning_peak": "07:00 – 10:00  Morning peak",
-    "midday": "10:00 – 16:00  Midday",
-    "evening_peak": "16:00 – 20:00  Evening peak",
-    "night": "20:00 – 23:00  Night",
-    "late_night": "23:00 – 04:00  Late night",
+BAND_CLOCK = {
+    "morning_peak": "07:00 – 10:00",
+    "midday": "10:00 – 16:00",
+    "evening_peak": "16:00 – 20:00",
+    "night": "20:00 – 23:00",
+    "late_night": "23:00 – 04:00",
+}
+BAND_NAME = {
+    "morning_peak": "Morning rush",
+    "midday": "Middle of the day",
+    "evening_peak": "Evening rush",
+    "night": "Evening",
+    "late_night": "Late night",
+}
+BAND_TICK = {
+    "morning_peak": "7am",
+    "midday": "10am",
+    "evening_peak": "4pm",
+    "night": "8pm",
+    "late_night": "11pm",
 }
 
-# Warm where service holds up, red where it has gone. Chosen to read on a dark
-# base map and to stay distinguishable for the most common colour deficiencies.
+# Luminance-ordered: brightest is full service, and "none" is a hollow ring so
+# it reads as absence rather than as another colour on the scale.
 GRADE_COLOURS = {
-    "maintained": "#4ade80",
-    "reduced": "#a3e635",
-    "poor": "#fbbf24",
-    "collapsed": "#fb7185",
-    "no_service": "#ef4444",
+    "maintained": "#FFD166",
+    "reduced": "#F2A65A",
+    "poor": "#DD7F5C",
+    "collapsed": "#B9566E",
+    "no_service": "#FF4D6D",
+}
+GRADE_WORDS = {
+    "maintained": "Running normally",
+    "reduced": "Thinned out",
+    "poor": "Barely running",
+    "collapsed": "Nearly gone",
+    "no_service": "No bus at all",
 }
 
 HYDERABAD_CENTRE = (17.42, 78.47)
 
 
 def _metro_lines(metro_feed: dict[str, pd.DataFrame]) -> list[dict]:
-    """Corridor polylines with their official route colours."""
     shapes = metro_feed["shapes"].copy()
     shapes["shape_pt_sequence"] = pd.to_numeric(shapes["shape_pt_sequence"])
     for col in ("shape_pt_lat", "shape_pt_lon"):
@@ -72,7 +106,6 @@ def _metro_lines(metro_feed: dict[str, pd.DataFrame]) -> list[dict]:
 
 
 def _station_payload(scored: pd.DataFrame, stations: pd.DataFrame, radius_m: int) -> dict:
-    """Per-station metrics for every band, plus the KPI roll-up per band."""
     at_radius = scored[scored["radius_m"] == radius_m]
     coords = stations.set_index("stop_id")[["stop_lat", "stop_lon"]]
 
@@ -106,197 +139,538 @@ def _station_payload(scored: pd.DataFrame, stations: pd.DataFrame, radius_m: int
         b = at_radius[at_radius["band"] == band]
         if b.empty:
             continue
-        served = b[b["departures_per_hour"] > 0]
         kpis[band] = {
-            "served": int(len(served)),
+            "served": int((b["departures_per_hour"] > 0).sum()),
             "total": int(len(b)),
-            "median_dep": round(float(b["departures_per_hour"].median()), 1),
-            "median_dest": int(b["n_destinations"].median()),
-            "retention": round(float(b["retention"].median()), 4),
-            "zero": int((b["departures_per_hour"] == 0).sum()),
+            "dep": round(float(b["departures_per_hour"].median()), 1),
+            "dest": int(b["n_destinations"].median()),
+            "ret": round(float(b["retention"].median()), 4),
         }
-
     return {"stations": by_station, "kpis": kpis}
 
 
-def _panel_css() -> str:
+def _css() -> str:
     return """
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-  html, body, #map, .folium-map { background: #0b0d13 !important; }
-  /* Darken the OSM raster client-side; keeps the basemap key-free while the
-     markers and metro lines stay saturated on top of it. */
-  .leaflet-tile-pane { filter: invert(1) hue-rotate(185deg) brightness(0.92)
-                               contrast(0.88) saturate(0.55); }
-  .leaflet-control-attribution { background: rgba(17,20,28,0.85) !important;
-    color: #7c8497 !important; }
-  .leaflet-control-attribution a { color: #9aa2b6 !important; }
-  .tga-panel, .tga-legend {
-    position: absolute; z-index: 9999;
-    background: rgba(17, 20, 28, 0.92);
-    color: #e8eaf0; border: 1px solid rgba(255,255,255,0.13);
-    border-radius: 10px; padding: 14px 16px;
-    font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-    box-shadow: 0 8px 28px rgba(0,0,0,0.45);
+  :root {
+    --ground: #080B14;
+    --surface: #101726;
+    --surface-2: #172033;
+    --edge: rgba(150,170,210,0.14);
+    --ink: #EAEEF7;
+    --ink-dim: #99A5BF;
+    --ink-faint: #64708C;
+    --gold: #FFD166;
+    --alarm: #FF4D6D;
+    --sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", monospace;
   }
-  .tga-panel { top: 14px; left: 14px; width: 310px; }
-  /* Bottom-RIGHT, clear of the scale bar at bottom-left and sitting above the
-     attribution line. On a narrow projector the legend and the scale bar
-     collided when both were on the left. */
-  .tga-legend { bottom: 34px; right: 14px; width: 190px; padding: 12px 14px; }
-  .tga-title { font-size: 12px; letter-spacing: .09em; text-transform: uppercase;
-    color: #8b93a7; margin: 0 0 2px; }
-  .tga-band { font-size: 19px; font-weight: 600; margin: 0 0 12px; color: #fff; }
-  .tga-kpi { display: flex; justify-content: space-between; align-items: baseline;
-    padding: 5px 0; border-top: 1px solid rgba(255,255,255,0.07); }
-  .tga-kpi span:first-child { color: #9aa2b6; }
-  .tga-kpi span:last-child { font-variant-numeric: tabular-nums;
-    font-weight: 600; font-size: 15px; }
-  .tga-alert { color: #fb7185 !important; }
-  .tga-slider { width: 100%; margin: 14px 0 4px; accent-color: #60a5fa; }
-  .tga-ticks { display: flex; justify-content: space-between;
-    font-size: 10px; color: #6b7386; }
-  .tga-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
-  .tga-dot { width: 11px; height: 11px; border-radius: 50%; flex: none; }
-  .tga-note { margin-top: 10px; font-size: 11px; color: #6b7386; line-height: 1.4; }
-  .leaflet-popup-content-wrapper { background: #11141c; color: #e8eaf0;
-    border-radius: 8px; }
-  .leaflet-popup-tip { background: #11141c; }
-  .tga-pop-name { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
-  .tga-pop td { padding: 2px 10px 2px 0; font-size: 12.5px; }
-  .tga-pop td:last-child { font-variant-numeric: tabular-nums; font-weight: 600; }
+  html, body, #map, .folium-map { background: var(--ground) !important; }
+  .leaflet-tile-pane {
+    filter: invert(1) hue-rotate(190deg) brightness(0.82) contrast(0.92) saturate(0.4);
+  }
+  .leaflet-control-attribution {
+    background: rgba(8,11,20,0.82) !important; color: var(--ink-faint) !important;
+    font-family: var(--sans) !important; font-size: 10px !important;
+  }
+  .leaflet-control-attribution a { color: var(--ink-faint) !important; }
+  .leaflet-control-scale-line {
+    background: rgba(8,11,20,0.8); color: var(--ink-dim);
+    border-color: var(--edge) !important; font-family: var(--mono);
+  }
+
+  /* ---------- left rail ---------- */
+  .atlas {
+    position: absolute; top: 0; left: 0; bottom: 0; width: 352px; z-index: 9999;
+    background: linear-gradient(180deg, var(--surface) 0%, #0C1220 100%);
+    border-right: 1px solid var(--edge);
+    font-family: var(--sans); color: var(--ink);
+    display: flex; flex-direction: column;
+    overflow-y: auto; overscroll-behavior: contain;
+  }
+  .atlas::-webkit-scrollbar { width: 8px; }
+  .atlas::-webkit-scrollbar-thumb { background: var(--surface-2); border-radius: 4px; }
+  .atlas__head { padding: 22px 24px 18px; border-bottom: 1px solid var(--edge); }
+  .atlas__name {
+    margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -0.02em;
+  }
+  .atlas__sub { margin: 4px 0 0; font-size: 13px; color: var(--ink-dim); }
+
+  .modes { display: flex; gap: 2px; margin: 16px 0 0;
+    background: rgba(0,0,0,0.3); padding: 3px; border-radius: 8px; }
+  .modes button {
+    flex: 1; appearance: none; border: 0; border-radius: 6px; cursor: pointer;
+    padding: 9px 10px; font: 500 13px var(--sans); color: var(--ink-dim);
+    background: transparent; transition: background .16s, color .16s;
+  }
+  .modes button[aria-selected="true"] { background: var(--surface-2); color: var(--ink); }
+  .modes button:focus-visible { outline: 2px solid var(--gold); outline-offset: 1px; }
+
+  .panel { padding: 20px 24px 24px; }
+  .panel[hidden] { display: none !important; }
+
+  /* the hero: the time window itself */
+  .clock { font: 600 34px/1 var(--mono); letter-spacing: -0.03em; margin: 0; }
+  .clock__name { margin: 6px 0 0; font-size: 14px; color: var(--ink-dim); }
+
+  .slider { width: 100%; margin: 20px 0 6px; accent-color: var(--gold); }
+  .slider:focus-visible { outline: 2px solid var(--gold); outline-offset: 4px; }
+  .ticks { display: flex; justify-content: space-between;
+    font: 400 11px var(--mono); color: var(--ink-faint); }
+
+  /* metric rows: an inline bar encodes the value against the day's peak, so
+     the collapse is visible before any number is read */
+  .metric { padding: 14px 0 12px; border-top: 1px solid var(--edge); }
+  .metric:first-of-type { margin-top: 18px; }
+  .metric__top { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+  .metric__label { font-size: 14px; font-weight: 500; }
+  .metric__value { font: 600 22px var(--mono); letter-spacing: -0.02em; }
+  .metric__note { margin: 2px 0 0; font-size: 12px; color: var(--ink-faint); }
+  .metric__track { height: 3px; margin-top: 9px; background: rgba(255,255,255,0.07); border-radius: 2px; }
+  .metric__fill { height: 100%; background: var(--gold); border-radius: 2px;
+    transition: width .28s ease; }
+  .is-alarm .metric__value { color: var(--alarm); }
+  .is-alarm .metric__fill { background: var(--alarm); }
+
+  /* optimise mode */
+  .lede { margin: 0 0 18px; font-size: 13.5px; line-height: 1.5; color: var(--ink-dim); }
+  .result { display: flex; align-items: baseline; gap: 10px; margin: 4px 0 2px; }
+  .result__n { font: 600 40px/1 var(--mono); letter-spacing: -0.03em; color: var(--gold); }
+  .result__unit { font-size: 14px; color: var(--ink-dim); }
+  .result__note { margin: 6px 0 0; font-size: 12.5px; color: var(--ink-faint); }
+
+  .equity { margin: 18px 0 0; padding: 14px 16px; border: 1px solid var(--edge);
+    border-radius: 10px; background: rgba(255,77,109,0.05); }
+  .equity__row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .equity__label { font-size: 13.5px; font-weight: 500; }
+  .equity__note { margin: 7px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--ink-dim); }
+  .switch { position: relative; width: 40px; height: 22px; flex: none; }
+  .switch input { position: absolute; inset: 0; opacity: 0; cursor: pointer; margin: 0; }
+  .switch span { position: absolute; inset: 0; border-radius: 11px; cursor: pointer;
+    background: rgba(255,255,255,0.14); transition: background .18s; }
+  .switch span::after { content: ""; position: absolute; top: 3px; left: 3px;
+    width: 16px; height: 16px; border-radius: 50%; background: var(--ink);
+    transition: transform .18s; }
+  .switch input:checked + span { background: var(--alarm); }
+  .switch input:checked + span::after { transform: translateX(18px); }
+  .switch input:focus-visible + span { outline: 2px solid var(--gold); outline-offset: 2px; }
+
+  .routes { margin: 20px 0 0; }
+  .routes__head { display: flex; justify-content: space-between; align-items: baseline;
+    padding-bottom: 8px; border-bottom: 1px solid var(--edge); }
+  .routes__title { font-size: 14px; font-weight: 600; }
+  .routes__count { font: 400 12px var(--mono); color: var(--ink-faint); }
+  .route { display: grid; grid-template-columns: auto 1fr auto; gap: 10px;
+    align-items: baseline; width: 100%; text-align: left;
+    padding: 11px 8px 11px 10px; margin: 2px 0 0;
+    background: transparent; border: 0; border-radius: 7px; cursor: pointer;
+    color: inherit; font-family: var(--sans); transition: background .14s; }
+  .route:hover, .route.is-on { background: var(--surface-2); }
+  .route:focus-visible { outline: 2px solid var(--gold); outline-offset: -2px; }
+  .route__id { font: 600 13px var(--mono); color: var(--gold); }
+  .route__where { font-size: 12.5px; color: var(--ink-dim);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .route__n { font: 500 12.5px var(--mono); color: var(--ink-dim); }
+  .route.is-forced .route__id { color: var(--alarm); }
+
+  /* legend, bottom right of the map */
+  .key { position: absolute; right: 16px; bottom: 30px; z-index: 9999;
+    background: rgba(16,23,38,0.93); border: 1px solid var(--edge);
+    border-radius: 10px; padding: 13px 15px; font-family: var(--sans);
+    color: var(--ink); width: 196px; }
+  .key h2 { margin: 0 0 9px; font-size: 12.5px; font-weight: 600; color: var(--ink-dim); }
+  /* scoped to the rows, not the container -- `.key div` would also match it */
+  .key > div > div { display: flex; align-items: center; gap: 9px;
+    padding: 3px 0; font-size: 12.5px; }
+  .key i { width: 11px; height: 11px; border-radius: 50%; flex: none; box-sizing: border-box; }
+
+  /* popups */
+  .leaflet-popup-content-wrapper {
+    background: var(--surface); color: var(--ink);
+    border: 1px solid var(--edge); border-radius: 10px;
+    box-shadow: 0 18px 50px rgba(0,0,0,0.6);
+  }
+  .leaflet-popup-content { margin: 14px 16px; font-family: var(--sans); }
+  .leaflet-popup-tip { background: var(--surface); border: 1px solid var(--edge); }
+  .leaflet-popup-close-button { color: var(--ink-faint) !important; }
+  .pop h3 { margin: 0 0 3px; font-size: 16px; font-weight: 600; }
+  .pop__state { margin: 0 0 10px; font-size: 12.5px; }
+  .pop table { border-collapse: collapse; }
+  .pop td { padding: 3px 0; font-size: 13px; }
+  .pop td:first-child { padding-right: 18px; color: var(--ink-dim); }
+  .pop td:last-child { font: 500 13px var(--mono); text-align: right; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+  @media (max-width: 760px) {
+    .atlas { width: 100%; bottom: auto; max-height: 52%; border-right: 0;
+      border-bottom: 1px solid var(--edge); }
+    .key { display: none; }
+  }
 </style>
 """
 
 
-def _panel_html(band_order: list[str]) -> str:
-    ticks = "".join(
-        f"<span>{lbl}</span>"
-        for lbl in ("Morning", "Midday", "Evening", "Night", "Late")
+def _html(band_order: list[str], has_optimisation: bool) -> str:
+    ticks = "".join(f"<span>{BAND_TICK[b]}</span>" for b in band_order)
+    optimise_tab = (
+        '<button id="tab-add" role="tab" aria-selected="false">Where to add buses</button>'
+        if has_optimisation
+        else ""
     )
+    optimise_panel = (
+        """
+  <section class="panel" id="panel-add" role="tabpanel" hidden>
+    <p class="lede">Bus service near the metro all but stops after 11pm. If
+      TGSRTC could run a few more bus-hours in that window, these are the
+      routes worth restarting.</p>
+
+    <p class="clock" id="budget-label">30 bus-hours</p>
+    <p class="clock__name">added after 11pm</p>
+    <input class="slider" id="budget" type="range" min="0" max="4" step="1" value="2"
+           aria-label="Extra bus-hours available after 11pm">
+    <div class="ticks" id="budget-ticks"></div>
+
+    <div class="result">
+      <span class="result__n" id="opt-connections">—</span>
+      <span class="result__unit">new connections</span>
+    </div>
+    <p class="result__note" id="opt-note">—</p>
+
+    <div class="equity" id="equity" hidden>
+      <div class="equity__row">
+        <span class="equity__label" id="equity-label">Reconnect Raidurg</span>
+        <label class="switch">
+          <input type="checkbox" id="equity-toggle" aria-describedby="equity-note">
+          <span></span>
+        </label>
+      </div>
+      <p class="equity__note" id="equity-note">—</p>
+    </div>
+
+    <div class="routes">
+      <div class="routes__head">
+        <span class="routes__title">Routes to restart</span>
+        <span class="routes__count" id="routes-count">—</span>
+      </div>
+      <div id="routes-list"></div>
+    </div>
+  </section>"""
+        if has_optimisation
+        else ""
+    )
+
     return f"""
-<div class="tga-panel">
-  <p class="tga-title">Hyderabad metro–bus connectivity</p>
-  <p class="tga-band" id="tga-band">—</p>
-  <input class="tga-slider" id="tga-slider" type="range"
-         min="0" max="{len(band_order) - 1}" step="1" value="2">
-  <div class="tga-ticks">{ticks}</div>
-  <div class="tga-kpi"><span>Stations with any bus</span><span id="tga-served">—</span></div>
-  <div class="tga-kpi"><span>Median departures / hour</span><span id="tga-dep">—</span></div>
-  <div class="tga-kpi"><span>Median destinations reachable</span><span id="tga-dest">—</span></div>
-  <div class="tga-kpi"><span>Peak service retained</span><span id="tga-ret">—</span></div>
-  <p class="tga-note">Bus service within 500 m of each metro station.
-     Marker size is departures per hour. Open GTFS, TGSRTC + HMRL.</p>
+<div class="atlas">
+  <header class="atlas__head">
+    <h1 class="atlas__name">Transfer Gap Atlas</h1>
+    <p class="atlas__sub">Does a metro ticket get you home? Hyderabad, all 57 stations.</p>
+    <div class="modes" role="tablist">
+      <button id="tab-network" role="tab" aria-selected="true">Through the day</button>
+      {optimise_tab}
+    </div>
+  </header>
+
+  <section class="panel" id="panel-network" role="tabpanel">
+    <p class="clock" id="clock">—</p>
+    <p class="clock__name" id="clock-name">—</p>
+    <input class="slider" id="band" type="range" min="0" max="{len(band_order) - 1}"
+           step="1" value="2" aria-label="Time of day">
+    <div class="ticks">{ticks}</div>
+
+    <div class="metric" id="m-dep">
+      <div class="metric__top">
+        <span class="metric__label">Buses an hour</span>
+        <span class="metric__value" id="v-dep">—</span>
+      </div>
+      <p class="metric__note">Leaving from stops within a 500 m walk of a typical station</p>
+      <div class="metric__track"><div class="metric__fill" id="f-dep"></div></div>
+    </div>
+
+    <div class="metric" id="m-dest">
+      <div class="metric__top">
+        <span class="metric__label">Places you can get to</span>
+        <span class="metric__value" id="v-dest">—</span>
+      </div>
+      <p class="metric__note">Separate destinations those buses actually run to</p>
+      <div class="metric__track"><div class="metric__fill" id="f-dest"></div></div>
+    </div>
+
+    <div class="metric" id="m-ret">
+      <div class="metric__top">
+        <span class="metric__label">Service still running</span>
+        <span class="metric__value" id="v-ret">—</span>
+      </div>
+      <p class="metric__note">Share of the same station's 4–8pm service</p>
+      <div class="metric__track"><div class="metric__fill" id="f-ret"></div></div>
+    </div>
+
+    <div class="metric" id="m-served">
+      <div class="metric__top">
+        <span class="metric__label">Stations with a bus nearby</span>
+        <span class="metric__value" id="v-served">—</span>
+      </div>
+      <p class="metric__note">Any bus at all within a 500 m walk</p>
+      <div class="metric__track"><div class="metric__fill" id="f-served"></div></div>
+    </div>
+  </section>
+{optimise_panel}
 </div>
-<div class="tga-legend">
-  <p class="tga-title" style="margin-bottom:6px">Service retained</p>
-  <div class="tga-row"><span class="tga-dot" style="background:#4ade80"></span>Maintained &gt;40%</div>
-  <div class="tga-row"><span class="tga-dot" style="background:#a3e635"></span>Reduced 15–40%</div>
-  <div class="tga-row"><span class="tga-dot" style="background:#fbbf24"></span>Poor 5–15%</div>
-  <div class="tga-row"><span class="tga-dot" style="background:#fb7185"></span>Collapsed 1–5%</div>
-  <div class="tga-row"><span class="tga-dot" style="background:#ef4444"></span>No service</div>
-</div>
+
+<aside class="key">
+  <h2 id="key-title">Bus service near each station</h2>
+  <div id="key-body"></div>
+</aside>
 """
 
 
-def _script(payload: dict, band_order: list[str], labels: dict, colours: dict) -> str:
-    """Bare JS, no <script> wrapper: Folium appends this inside its own block."""
+def _script(payload: dict, band_order: list[str], optimisation: dict | None) -> str:
     return f"""
 (function () {{
   var DATA = {json.dumps(payload)};
   var BANDS = {json.dumps(band_order)};
-  var LABELS = {json.dumps(labels)};
-  var COLOURS = {json.dumps(colours)};
-  var map = null, layer = null;
+  var CLOCK = {json.dumps(BAND_CLOCK)};
+  var NAMES = {json.dumps(BAND_NAME)};
+  var COLOURS = {json.dumps(GRADE_COLOURS)};
+  var WORDS = {json.dumps(GRADE_WORDS)};
+  var OPT = {json.dumps(optimisation)};
 
-  // Folium names its map variable unpredictably AND emits this block before the
-  // one that creates the map, so we poll for it rather than reading it now.
+  var map = null, stationLayer = null, routeLayer = null;
+  var mode = 'network', activeRoute = null;
+
   function findMap() {{
     var keys = Object.keys(window);
     for (var i = 0; i < keys.length; i++) {{
       var k = keys[i];
-      if (k.indexOf('map_') === 0 && window[k] && window[k]._container) {{
-        return window[k];
-      }}
+      if (k.indexOf('map_') === 0 && window[k] && window[k]._container) return window[k];
     }}
     return null;
   }}
 
+  var $ = function (id) {{ return document.getElementById(id); }};
+  function peak(metric) {{
+    var k = DATA.kpis['evening_peak'] || {{}};
+    return k[metric] || 1;
+  }}
+
+  // ---------- network mode ----------
+
   function radius(dep) {{
-    // Square root keeps a 300/h station from swamping a 20/h one; the cap stops
-    // peak markers merging into one blob over the corridors, and the floor
-    // keeps dead stations visible rather than vanishing silently.
     return dep <= 0 ? 4.5 : Math.max(4.5, Math.min(15, 1.6 * Math.sqrt(dep)));
   }}
 
-  function popup(name, m) {{
-    return '<div class="tga-pop">' +
-      '<div class="tga-pop-name">' + name + '</div>' +
-      '<table><tr><td>Bus departures / hour</td><td>' + m.dep + '</td></tr>' +
-      '<tr><td>Destinations reachable</td><td>' + m.dest + '</td></tr>' +
-      '<tr><td>Distinct routes</td><td>' + m.routes + '</td></tr>' +
-      '<tr><td>Peak service retained</td><td>' + (m.ret * 100).toFixed(1) + '%</td></tr>' +
-      '<tr><td>Nearest bus stop</td><td>' +
-        (m.walk === null ? 'none within 500 m' : m.walk + ' m') + '</td></tr>' +
+  function stationPopup(name, m) {{
+    return '<div class="pop"><h3>' + name + '</h3>' +
+      '<p class="pop__state" style="color:' + (COLOURS[m.grade] || '#FF4D6D') + '">' +
+        (WORDS[m.grade] || '') + '</p><table>' +
+      '<tr><td>Buses an hour</td><td>' + m.dep + '</td></tr>' +
+      '<tr><td>Places you can get to</td><td>' + m.dest + '</td></tr>' +
+      '<tr><td>Bus routes nearby</td><td>' + m.routes + '</td></tr>' +
+      '<tr><td>Share of 4–8pm service</td><td>' + (m.ret * 100).toFixed(1) + '%</td></tr>' +
+      '<tr><td>Walk to nearest stop</td><td>' +
+        (m.walk === null ? 'no stop within 500 m' : m.walk + ' m') + '</td></tr>' +
       '</table></div>';
   }}
 
-  function draw(bandIndex) {{
-    var band = BANDS[bandIndex];
-    layer.clearLayers();
+  function drawNetwork(i) {{
+    var band = BANDS[i];
+    stationLayer.clearLayers();
+    routeLayer.clearLayers();
 
     Object.keys(DATA.stations).forEach(function (id) {{
       var s = DATA.stations[id];
-      var m = s.bands[band];
-      if (!m) {{ m = {{dep: 0, dest: 0, routes: 0, ret: 0, walk: null, grade: 'no_service'}}; }}
-      var colour = COLOURS[m.grade] || '#ef4444';
-      var dead = m.dep <= 0;
+      var m = s.bands[band] ||
+        {{dep: 0, dest: 0, routes: 0, ret: 0, walk: null, grade: 'no_service'}};
+      var colour = COLOURS[m.grade] || '#FF4D6D';
+      var gone = m.dep <= 0;
 
       L.circleMarker([s.lat, s.lon], {{
         radius: radius(m.dep),
-        color: dead ? '#ffffff' : colour,
-        weight: dead ? 2 : 1,
-        opacity: dead ? 0.95 : 0.85,
+        color: gone ? '#FF4D6D' : colour,
+        weight: gone ? 2 : 1,
+        opacity: 0.9,
         fillColor: colour,
-        fillOpacity: dead ? 0.95 : 0.6
-      }}).bindPopup(popup(s.name, m))
-        .bindTooltip(s.name + ' — ' + m.dep + '/h', {{direction: 'top'}})
-        .addTo(layer);
+        fillOpacity: gone ? 0 : 0.55
+      }}).bindPopup(stationPopup(s.name, m))
+        .bindTooltip(s.name, {{direction: 'top'}})
+        .addTo(stationLayer);
 
-      // A station that has lost its bus network entirely gets a halo, so the
-      // eye finds it without having to read every marker.
-      if (dead) {{
+      if (gone) {{
         L.circleMarker([s.lat, s.lon], {{
-          radius: 15, color: '#ef4444', weight: 1.5,
-          opacity: 0.85, fill: false
-        }}).addTo(layer);
+          radius: 14, color: '#FF4D6D', weight: 1.2, opacity: 0.7, fill: false
+        }}).addTo(stationLayer);
       }}
     }});
 
     var k = DATA.kpis[band] || {{}};
-    document.getElementById('tga-band').textContent = LABELS[band];
-    document.getElementById('tga-served').textContent =
-      (k.served != null ? k.served + ' / ' + k.total : '—');
-    document.getElementById('tga-dep').textContent =
-      (k.median_dep != null ? k.median_dep : '—');
-    document.getElementById('tga-dest').textContent =
-      (k.median_dest != null ? k.median_dest : '—');
-    document.getElementById('tga-ret').textContent =
-      (k.retention != null ? (k.retention * 100).toFixed(1) + '%' : '—');
-
-    var alert = k.retention != null && k.retention < 0.15;
-    ['tga-dep', 'tga-dest', 'tga-ret', 'tga-served'].forEach(function (id) {{
-      document.getElementById(id).classList.toggle('tga-alert', alert);
+    $('clock').textContent = CLOCK[band];
+    $('clock-name').textContent = NAMES[band];
+    setMetric('dep', k.dep, k.dep, peak('dep'), k.dep != null ? String(k.dep) : '—');
+    setMetric('dest', k.dest, k.dest, peak('dest'), k.dest != null ? String(k.dest) : '—');
+    setMetric('ret', k.ret, k.ret, 1, k.ret != null ? (k.ret * 100).toFixed(1) + '%' : '—');
+    setMetric('served', k.served, k.served, k.total || 57,
+              k.served != null ? k.served + ' of ' + k.total : '—');
+    var alarm = k.ret != null && k.ret < 0.15;
+    ['dep', 'dest', 'ret', 'served'].forEach(function (id) {{
+      $('m-' + id).classList.toggle('is-alarm', alarm);
     }});
+  }}
+
+  function setMetric(id, value, fillValue, max, text) {{
+    $('v-' + id).textContent = text;
+    var pct = (fillValue == null || !max) ? 0 : Math.max(0, Math.min(100, 100 * fillValue / max));
+    $('f-' + id).style.width = pct + '%';
+  }}
+
+  // ---------- optimise mode ----------
+
+  function currentSolution() {{
+    var budget = String(OPT.budgets[+$('budget').value]);
+    var sol = OPT.solutions[budget];
+    var useEquity = $('equity-toggle').checked && sol.equity;
+    return {{
+      budget: budget,
+      base: sol,
+      routes: useEquity ? sol.equity.routes : sol.routes,
+      connections: useEquity ? sol.equity.connections : sol.connections,
+      equityOn: useEquity
+    }};
+  }}
+
+  function drawOptimised() {{
+    var s = currentSolution();
+    stationLayer.clearLayers();
+    routeLayer.clearLayers();
+
+    $('budget-label').textContent = s.budget + ' bus-hours';
+    $('opt-connections').textContent = s.connections;
+    $('opt-note').textContent =
+      s.routes.length + ' routes restarted · ' +
+      (s.connections / Number(s.budget)).toFixed(1) + ' connections for each bus-hour · ' +
+      'a greedy baseline finds ' + s.base.greedy;
+
+    var eq = s.base.equity;
+    $('equity').hidden = !eq;
+    if (eq) {{
+      $('equity-label').textContent = 'Reconnect ' + eq.station;
+      $('equity-note').textContent = eq.station + ' has no late-night bus at all, but its ' +
+        'routes are long and shared with no other gap station, so maximising connections ' +
+        'skips it. Restarting route ' + eq.forced_route + ' for ' + eq.forced_hours.toFixed(1) +
+        ' bus-hours gives it ' + eq.station_gain + ' destinations and costs ' + eq.cost +
+        ' connections elsewhere.';
+    }}
+
+    // Target stations: filled where the plan reaches them, hollow where not.
+    var gains = s.equityOn && eq ? eq.per_station : s.base.per_station;
+    Object.keys(OPT.targets).forEach(function (name) {{
+      var t = OPT.targets[name];
+      var g = gains[name] || 0;
+      L.circleMarker([t.lat, t.lon], {{
+        radius: g > 0 ? Math.max(7, Math.min(16, 4 + g)) : 8,
+        color: g > 0 ? '#FFD166' : '#FF4D6D',
+        weight: 2, opacity: 0.95,
+        fillColor: '#FFD166', fillOpacity: g > 0 ? 0.35 : 0
+      }}).bindTooltip(
+          name + (g > 0 ? ' — ' + g + ' places added' : ' — still nothing'),
+          {{direction: 'top'}}
+        ).addTo(stationLayer);
+    }});
+
+    s.routes.forEach(function (r) {{
+      var pts = OPT.paths[r.route_id];
+      if (!pts || pts.length < 2) return;
+      L.polyline(pts, {{
+        color: r.forced ? '#FF4D6D' : '#FFD166',
+        weight: activeRoute === r.route_id ? 4.5 : 2.2,
+        opacity: activeRoute && activeRoute !== r.route_id ? 0.28 : 0.85
+      }}).bindTooltip(
+          'Route ' + r.route_id + ' — ' + r.destinations_added + ' places added',
+          {{sticky: true}}
+        ).addTo(routeLayer);
+    }});
+
+    renderRouteList(s);
+    $('key-title').textContent = 'The plan';
+    $('key-body').innerHTML =
+      '<div><i style="background:#FFD166"></i>Route to restart</div>' +
+      '<div><i style="background:#FFD166;opacity:.45"></i>Station reconnected</div>' +
+      '<div><i style="border:2px solid #FF4D6D"></i>Still no service</div>';
+  }}
+
+  function renderRouteList(s) {{
+    $('routes-count').textContent =
+      s.routes.reduce(function (a, r) {{ return a + r.hours; }}, 0).toFixed(1) + ' bus-hours';
+    var list = $('routes-list');
+    list.innerHTML = '';
+    s.routes.forEach(function (r) {{
+      var b = document.createElement('button');
+      b.className = 'route' + (r.forced ? ' is-forced' : '') +
+        (activeRoute === r.route_id ? ' is-on' : '');
+      b.innerHTML =
+        '<span class="route__id">' + r.route_id + '</span>' +
+        '<span class="route__where">' + r.stations.join(', ') + '</span>' +
+        '<span class="route__n">+' + r.destinations_added + '</span>';
+      b.title = r.hours.toFixed(1) + ' bus-hours · serves ' + r.stations.length +
+        ' gap stations · adds ' + r.destinations_added + ' places';
+      b.addEventListener('click', function () {{
+        activeRoute = activeRoute === r.route_id ? null : r.route_id;
+        drawOptimised();
+        var pts = OPT.paths[r.route_id];
+        if (activeRoute && pts && pts.length > 1) map.fitBounds(L.latLngBounds(pts), {{padding: [60, 60]}});
+      }});
+      list.appendChild(b);
+    }});
+  }}
+
+  // ---------- chrome ----------
+
+  function setMode(next) {{
+    mode = next;
+    var isNet = mode === 'network';
+    $('tab-network').setAttribute('aria-selected', String(isNet));
+    $('panel-network').hidden = !isNet;
+    if ($('tab-add')) {{
+      $('tab-add').setAttribute('aria-selected', String(!isNet));
+      $('panel-add').hidden = isNet;
+    }}
+    if (isNet) {{
+      $('key-title').textContent = 'Bus service near each station';
+      $('key-body').innerHTML = Object.keys(WORDS).map(function (g) {{
+        var style = g === 'no_service'
+          ? 'border:2px solid ' + COLOURS[g]
+          : 'background:' + COLOURS[g];
+        return '<div><i style="' + style + '"></i>' + WORDS[g] + '</div>';
+      }}).join('');
+      drawNetwork(+$('band').value);
+    }} else {{
+      activeRoute = null;
+      drawOptimised();
+    }}
   }}
 
   function start() {{
     map = findMap();
-    if (!map) {{ return window.setTimeout(start, 60); }}
-    layer = L.layerGroup().addTo(map);
+    if (!map) return window.setTimeout(start, 60);
+    stationLayer = L.layerGroup().addTo(map);
+    routeLayer = L.layerGroup().addTo(map);
     L.control.scale({{imperial: false, position: 'bottomleft'}}).addTo(map);
-    var slider = document.getElementById('tga-slider');
-    slider.addEventListener('input', function () {{ draw(+this.value); }});
-    draw(+slider.value);
+
+    $('band').addEventListener('input', function () {{ drawNetwork(+this.value); }});
+    $('tab-network').addEventListener('click', function () {{ setMode('network'); }});
+
+    if (OPT) {{
+      $('budget-ticks').innerHTML =
+        OPT.budgets.map(function (b) {{ return '<span>' + b + '</span>'; }}).join('');
+      $('budget').max = String(OPT.budgets.length - 1);
+      $('budget').addEventListener('input', function () {{ activeRoute = null; drawOptimised(); }});
+      $('equity-toggle').addEventListener('change', function () {{ activeRoute = null; drawOptimised(); }});
+      $('tab-add').addEventListener('click', function () {{ setMode('add'); }});
+    }}
+    setMode('network');
   }}
   start();
 }})();
@@ -309,29 +683,26 @@ def build_interactive_map(
     metro_feed: dict[str, pd.DataFrame],
     out_path: Path,
     radius_m: int = 500,
+    optimisation: dict | None = None,
 ) -> Path:
     """Write the standalone interactive atlas to `out_path`."""
-    # OpenStreetMap rather than a dark CartoDB style: those now require an API
-    # key, and the venue is expected to have poor or no wifi. OSM tiles are
-    # key-free, and the CSS filter below darkens them client-side. If tiles fail
-    # to load entirely, the dark page background stays and the metro lines and
-    # station markers still read -- the demo degrades instead of dying.
-    # control_scale stays off: Folium's version renders dual km/mi units. The
-    # JS below adds a metric-only scale instead -- a "3 mi" readout on a slide
-    # in Hyderabad is noise.
+    # control_scale stays off: Folium's renders dual km/mi. A metric-only scale
+    # is added in JS instead -- a "3 mi" readout on a slide in Hyderabad is noise.
+    # OpenStreetMap rather than a dark CartoDB style, which now needs an API key;
+    # the CSS filter darkens it, and if tiles fail the page still reads.
     fmap = folium.Map(
         location=HYDERABAD_CENTRE,
         zoom_start=12,
         tiles="OpenStreetMap",
         control_scale=False,
+        zoom_control=False,
     )
-
     for line in _metro_lines(metro_feed):
         folium.PolyLine(
             line["points"],
             color=line["colour"],
-            weight=3.5,
-            opacity=0.75,
+            weight=3,
+            opacity=0.8,
             tooltip=f"Metro {line['route_id']}",
         ).add_to(fmap)
 
@@ -339,12 +710,12 @@ def build_interactive_map(
     band_order = [b for b in TIME_BANDS if b in payload["kpis"]]
 
     root = fmap.get_root()
-    root.header.add_child(branca.element.Element(_panel_css()))
-    root.html.add_child(branca.element.Element(_panel_html(band_order)))
+    root.header.add_child(branca.element.Element(_css()))
+    root.html.add_child(
+        branca.element.Element(_html(band_order, optimisation is not None))
+    )
     root.script.add_child(
-        branca.element.Element(
-            _script(payload, band_order, BAND_LABELS, GRADE_COLOURS)
-        )
+        branca.element.Element(_script(payload, band_order, optimisation))
     )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)

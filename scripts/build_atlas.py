@@ -8,6 +8,7 @@ summary, and a GeoJSON of stations for mapping.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -121,8 +122,20 @@ def main() -> None:
     geo.to_file(OUT / "stations.geojson", driver="GeoJSON")
     print(f"  wrote outputs/stations.geojson")
 
-    build_interactive_map(scored, stations, metro, OUT / "transfer_gap_atlas.html")
-    print(f"  wrote outputs/transfer_gap_atlas.html")
+    # Folded in when present; produced separately by export_optimisation.py
+    # because the GA takes minutes and the map should rebuild in seconds.
+    opt_path = OUT / "optimisation.json"
+    optimisation = (
+        json.loads(opt_path.read_text(encoding="utf-8")) if opt_path.exists() else None
+    )
+    build_interactive_map(
+        scored, stations, metro, OUT / "transfer_gap_atlas.html",
+        optimisation=optimisation,
+    )
+    print(
+        "  wrote outputs/transfer_gap_atlas.html"
+        + ("  (with optimisation)" if optimisation else "  (network mode only)")
+    )
 
     print("\n=== headline ===")
     for band in TIME_BANDS:
